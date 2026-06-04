@@ -259,6 +259,8 @@ def main():
     parser.add_argument('--collection', type=str, required=True, help='Butler collection')
     parser.add_argument('--instrument', type=str, required=True, choices=['LSSTCam', 'HSC'],
                         help='Instrument name')
+    parser.add_argument('--dataset_type', type=str, default=None,
+                        help='Dataset type (default: refit_psf_star for LSSTCam, finalized_src_table for HSC)')
     parser.add_argument('--band', type=str, default=None, help='Band to process (optional filter)')
     parser.add_argument('--repOut', type=str, default='rho_stats/', help='Output directory')
     parser.add_argument('--ellipticityType', type=str, default='distortion',
@@ -282,6 +284,14 @@ def main():
     print(f"  Band: {args.band if args.band else 'all'}")
     print(f"  Ellipticity type: {args.ellipticityType}")
     print(f"  SNR range: [{args.snr_min}, {args.snr_max}]")
+    # Set default dataset type based on instrument
+    if args.dataset_type is None:
+        if args.instrument == 'HSC':
+            args.dataset_type = 'finalized_src_table'
+        else:
+            args.dataset_type = 'refit_psf_star'
+
+    print(f"  Dataset type: {args.dataset_type}")
     print(f"  Angular bins: {args.nbins} bins from {args.min_sep} to {args.max_sep} arcmin")
 
     butler = Butler(args.repo, collections=args.collection)
@@ -295,7 +305,7 @@ def main():
         query_kwargs = {}
         if args.band is not None:
             query_kwargs['band'] = args.band
-        dsrefs = list(butler.registry.queryDatasets("refit_psf_star", **query_kwargs))
+        dsrefs = list(butler.registry.queryDatasets(args.dataset_type, **query_kwargs))
         visits = sorted(set(dsr.dataId["visit"] for dsr in dsrefs))
         print(f"Found {len(visits)} visits in collection")
 
@@ -310,7 +320,7 @@ def main():
 
     for visit in tqdm(visits, desc="Loading visits"):
         try:
-            uri = butler.getURI("refit_psf_star", instrument=args.instrument, visit=visit)
+            uri = butler.getURI(args.dataset_type, instrument=args.instrument, visit=visit)
             parquet_path = uri.geturl()
             data = load_visit_data(parquet_path, snr_min=args.snr_min, snr_max=args.snr_max)
             for k in all_data:
