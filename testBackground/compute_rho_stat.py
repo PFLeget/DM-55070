@@ -198,7 +198,7 @@ def plot_rho_statistics_combined(rho_stats_dict, output_file, title=None, instru
         'rho3alt': r"$\rho'_{3}(\theta) = \langle \frac{\delta T}{T}, \frac{\delta T}{T}\rangle$",
     }
 
-    colors = {'all': 'C0', 'used': 'C1', 'reserved': 'C2'}
+    colors = {'all': 'black', 'used': 'blue', 'reserved': 'red'}
     markers = {'all': 'o', 'used': 's', 'reserved': '^'}
 
     if instrument == 'LSSTCam':
