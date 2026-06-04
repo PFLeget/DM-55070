@@ -1,0 +1,11 @@
+#!/bin/bash
+
+
+pipetask run \
+	 -b dp2_prep \
+	 -i LSSTCam/runs/DRP/DP2/v30_0_0/DM-53881/stage2 \
+	 -o u/leget/LSSTCam/DM-55070/testv2 \
+	 -p ${DRP_PIPE_DIR}/pipelines/LSSTCam/DRP.yaml#refitPsfModelDetector,consolidateRefitPsfModelDetector \
+	 -d "instrument='LSSTCam' and visit=2025050400608 and detector=42 " \
+	 --config-file refitPsfModelDetector:finalizeCharacterizationConfig.py \
+	 -j 12

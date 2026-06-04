@@ -1,0 +1,8 @@
+meas_algorithms/
+meas_extensions_piff/
+meas_extensions_shapeHSM/
+pipe_tasks/
+testBackground/submit/
+testBackground/plot*
+testBackground/.ipynb_checkpoints/
+testBackground/Untitled.ipynb
