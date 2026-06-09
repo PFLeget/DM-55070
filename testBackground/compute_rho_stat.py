@@ -38,8 +38,13 @@ PARQUET_COLUMNS = [
     'calib_psf_used', 'calib_psf_reserved',
 ]
 
+PARQUET_COLUMNS_MOCK = PARQUET_COLUMNS + [
+    'shape_Iuu_mock', 'shape_Ivv_mock', 'shape_Iuv_mock',
+    'psfShape_Iuu_mock', 'psfShape_Ivv_mock', 'psfShape_Iuv_mock',
+]
 
-def load_visit_data(parquet_path, snr_min=None, snr_max=None):
+
+def load_visit_data(parquet_path, snr_min=None, snr_max=None, load_mock=False):
     """Load visit data with sky coordinate moments.
 
     Parameters
@@ -50,12 +55,15 @@ def load_visit_data(parquet_path, snr_min=None, snr_max=None):
         Minimum SNR cut
     snr_max : float or None
         Maximum SNR cut
+    load_mock : bool
+        If True, also load mock moment columns
 
     Returns
     -------
     dict with keys for moments, coordinates, and flags for used/reserved
     """
-    table = polars.scan_parquet(parquet_path).select(PARQUET_COLUMNS).collect()
+    columns = PARQUET_COLUMNS_MOCK if load_mock else PARQUET_COLUMNS
+    table = polars.scan_parquet(parquet_path).select(columns).collect()
 
     # Filter by SNR
     if snr_min is not None or snr_max is not None:
@@ -69,7 +77,7 @@ def load_visit_data(parquet_path, snr_min=None, snr_max=None):
             mask &= snr <= snr_max
         table = table.filter(polars.Series(mask))
 
-    return {
+    result = {
         'ixx': table['shape_Iuu'].to_numpy(),
         'iyy': table['shape_Ivv'].to_numpy(),
         'ixy': table['shape_Iuv'].to_numpy(),
@@ -81,6 +89,14 @@ def load_visit_data(parquet_path, snr_min=None, snr_max=None):
         'calib_psf_used': table['calib_psf_used'].to_numpy().astype(bool),
         'calib_psf_reserved': table['calib_psf_reserved'].to_numpy().astype(bool),
     }
+    if load_mock:
+        result['ixx_mock'] = table['shape_Iuu_mock'].to_numpy()
+        result['iyy_mock'] = table['shape_Ivv_mock'].to_numpy()
+        result['ixy_mock'] = table['shape_Iuv_mock'].to_numpy()
+        result['ixx_psf_mock'] = table['psfShape_Iuu_mock'].to_numpy()
+        result['iyy_psf_mock'] = table['psfShape_Ivv_mock'].to_numpy()
+        result['ixy_psf_mock'] = table['psfShape_Iuv_mock'].to_numpy()
+    return result
 
 
 def compute_ellipticity(ixx, iyy, ixy, ellipticity_type='distortion'):
@@ -127,6 +143,42 @@ def compute_rho_inputs(data, ellipticity_type='distortion'):
         'size_res': size_res,
         'e1_size_res': e1_size_res,
         'e2_size_res': e2_size_res,
+    }
+
+
+def compute_mock_rho_inputs(data, ellipticity_type='distortion'):
+    """Compute the inputs for mock rho statistics (using mock moments for both source and PSF)."""
+    e1_mock, e2_mock = compute_ellipticity(data['ixx_mock'], data['iyy_mock'], data['ixy_mock'],
+                                           ellipticity_type)
+    e1_psf_mock, e2_psf_mock = compute_ellipticity(data['ixx_psf_mock'], data['iyy_psf_mock'],
+                                                   data['ixy_psf_mock'], ellipticity_type)
+
+    T_mock = data['ixx_mock'] + data['iyy_mock']
+    T_psf_mock = data['ixx_psf_mock'] + data['iyy_psf_mock']
+
+    e1_res_mock = e1_mock - e1_psf_mock
+    e2_res_mock = e2_mock - e2_psf_mock
+    size_res_mock = (T_psf_mock - T_mock) / T_mock
+
+    responsivity = 2.0 if ellipticity_type == 'distortion' else 1.0
+    e1_mock /= responsivity
+    e2_mock /= responsivity
+    e1_res_mock /= responsivity
+    e2_res_mock /= responsivity
+
+    e1_size_res_mock = e1_mock * size_res_mock
+    e2_size_res_mock = e2_mock * size_res_mock
+
+    return {
+        'ra': data['ra'],
+        'dec': data['dec'],
+        'e1': e1_mock,
+        'e2': e2_mock,
+        'e1_res': e1_res_mock,
+        'e2_res': e2_res_mock,
+        'size_res': size_res_mock,
+        'e1_size_res': e1_size_res_mock,
+        'e2_size_res': e2_size_res_mock,
     }
 
 
@@ -275,6 +327,8 @@ def main():
                         help='Text file with visit IDs (one per line)')
     parser.add_argument('--output_suffix', type=str, default='',
                         help='Suffix for output files')
+    parser.add_argument('--compute_mock', action='store_true',
+                        help='Also compute rho stats on mock moments (requires shape_Iuu_mock columns)')
     args = parser.parse_args()
 
     print(f"Rho Statistics Computation")
@@ -316,13 +370,17 @@ def main():
     # Load all data
     all_keys = ['ixx', 'iyy', 'ixy', 'ixx_psf', 'iyy_psf', 'ixy_psf', 'ra', 'dec',
                 'calib_psf_used', 'calib_psf_reserved']
+    if args.compute_mock:
+        all_keys += ['ixx_mock', 'iyy_mock', 'ixy_mock',
+                     'ixx_psf_mock', 'iyy_psf_mock', 'ixy_psf_mock']
     all_data = {k: [] for k in all_keys}
 
     for visit in tqdm(visits, desc="Loading visits"):
         try:
             uri = butler.getURI(args.dataset_type, instrument=args.instrument, visit=visit)
             parquet_path = uri.geturl()
-            data = load_visit_data(parquet_path, snr_min=args.snr_min, snr_max=args.snr_max)
+            data = load_visit_data(parquet_path, snr_min=args.snr_min, snr_max=args.snr_max,
+                                   load_mock=args.compute_mock)
             for k in all_data:
                 all_data[k].append(data[k])
         except Exception as e:
@@ -438,6 +496,113 @@ def main():
     for sel, n in n_sources_dict.items():
         title += f" | {sel}: {n:,}"
     plot_rho_statistics_combined(all_rho_stats, output_plot, title=title, instrument=args.instrument)
+
+    # Compute mock rho statistics if requested
+    if args.compute_mock:
+        print(f"\n{'='*60}")
+        print("Computing MOCK rho statistics")
+        print(f"{'='*60}")
+
+        all_mock_rho_stats = {}
+        n_mock_sources_dict = {}
+
+        for star_selection in ['all', 'used', 'reserved']:
+            print(f"\nComputing mock rho statistics for: {star_selection}")
+
+            if star_selection == 'all':
+                sel_mask = np.ones(len(all_data['ra']), dtype=bool)
+            elif star_selection == 'used':
+                sel_mask = all_data['calib_psf_used']
+            elif star_selection == 'reserved':
+                sel_mask = all_data['calib_psf_reserved']
+
+            selected_data = {k: all_data[k][sel_mask] for k in all_data}
+            print(f"  Sources: {len(selected_data['ra']):,}")
+
+            if len(selected_data['ra']) == 0:
+                print(f"  WARNING: No sources for {star_selection}, skipping")
+                all_mock_rho_stats[star_selection] = None
+                continue
+
+            # Filter out sources with invalid mock moments
+            valid_mock = (np.isfinite(selected_data['ixx_mock']) &
+                          np.isfinite(selected_data['iyy_mock']) &
+                          np.isfinite(selected_data['ixy_mock']) &
+                          np.isfinite(selected_data['ixx_psf_mock']) &
+                          np.isfinite(selected_data['iyy_psf_mock']) &
+                          np.isfinite(selected_data['ixy_psf_mock']))
+            for k in selected_data:
+                selected_data[k] = selected_data[k][valid_mock]
+            print(f"  After mock NaN filter: {len(selected_data['ra']):,}")
+
+            if len(selected_data['ra']) == 0:
+                print(f"  WARNING: No valid mock sources for {star_selection}, skipping")
+                all_mock_rho_stats[star_selection] = None
+                continue
+
+            # Compute mock rho inputs
+            mock_inputs = compute_mock_rho_inputs(selected_data, ellipticity_type=args.ellipticityType)
+
+            # Compute rho stats on mock
+            mock_rho_stats = compute_rho_statistics(mock_inputs, treecorr_config)
+            all_mock_rho_stats[star_selection] = mock_rho_stats
+            n_mock_sources_dict[star_selection] = len(mock_inputs['ra'])
+
+            # Build output filename for mock
+            suffix_mock = f'{args.instrument}_{args.ellipticityType}_mock'
+            if args.band:
+                suffix_mock += f'_{args.band}'
+            suffix_mock += f'_{star_selection}'
+            if args.snr_min is not None:
+                suffix_mock += f'_snrmin{int(args.snr_min)}'
+            if args.snr_max is not None:
+                suffix_mock += f'_snrmax{int(args.snr_max)}'
+            if args.output_suffix:
+                suffix_mock += f'_{args.output_suffix}'
+
+            # Save mock results
+            output_pkl_mock = os.path.join(args.repOut, f'rho_stats_{suffix_mock}.pkl')
+            with open(output_pkl_mock, 'wb') as f:
+                pickle.dump({
+                    'rho_stats': {k: {'meanr': v.meanr,
+                                      'xip': v.xip if hasattr(v, 'xip') else v.xi,
+                                      'xim': v.xim if hasattr(v, 'xim') else None,
+                                      'varxip': v.varxip if hasattr(v, 'varxip') else v.varxi,
+                                      'varxim': v.varxim if hasattr(v, 'varxim') else None,
+                                      'npairs': v.npairs}
+                                 for k, v in mock_rho_stats.items()},
+                    'instrument': args.instrument,
+                    'band': args.band,
+                    'n_sources': len(mock_inputs['ra']),
+                    'n_visits': len(visits),
+                    'treecorr_config': treecorr_config,
+                    'ellipticity_type': args.ellipticityType,
+                    'collection': args.collection,
+                    'star_selection': star_selection,
+                    'is_mock': True,
+                }, f)
+            print(f"  Saved: {output_pkl_mock}")
+
+        # Make combined plot for mock
+        suffix_mock_combined = f'{args.instrument}_{args.ellipticityType}_mock'
+        if args.band:
+            suffix_mock_combined += f'_{args.band}'
+        if args.snr_min is not None:
+            suffix_mock_combined += f'_snrmin{int(args.snr_min)}'
+        if args.snr_max is not None:
+            suffix_mock_combined += f'_snrmax{int(args.snr_max)}'
+        if args.output_suffix:
+            suffix_mock_combined += f'_{args.output_suffix}'
+
+        output_plot_mock = os.path.join(args.repOut, f'rho_stats_{suffix_mock_combined}_combined.png')
+        title_mock = f"MOCK Rho Statistics - {args.instrument}"
+        if args.band:
+            title_mock += f" {args.band}-band"
+        title_mock += f" ({args.ellipticityType})\n{len(visits)} visits"
+        for sel, n in n_mock_sources_dict.items():
+            title_mock += f" | {sel}: {n:,}"
+        plot_rho_statistics_combined(all_mock_rho_stats, output_plot_mock, title=title_mock,
+                                     instrument=args.instrument)
 
 
 if __name__ == "__main__":
